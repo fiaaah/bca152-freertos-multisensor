@@ -26,6 +26,22 @@
 #define ADC_RAW_MAX 4095
 #define SENSOR_QUEUE_LENGTH 1
 
+#define ENCODER_CLK_PIN GPIO_NUM_32
+#define ENCODER_DT_PIN GPIO_NUM_33
+#define INPUT_TASK_STACK_SIZE 3072
+#define INPUT_TASK_PRIORITY 1
+
+enum class DisplayMode
+{
+    TEMPERATURE,
+    HUMIDITY,
+    LIGHT,
+    MOTION
+};
+
+static DisplayMode current_display_mode = DisplayMode::TEMPERATURE;
+static portMUX_TYPE display_mode_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static const char *TAG = "sensor";
 
 static adc_oneshot_unit_handle_t adc_handle;
@@ -174,6 +190,91 @@ static void DisplayTask(void *argument)
             ESP_LOGI(TAG, "Humidity: %.1f %%", sample.humidity);
             ESP_LOGI(TAG, "LDR ADC level: %d %%", sample.lightLevel);
         }
+    }
+}
+
+static DisplayMode NextDisplayMode(DisplayMode mode, bool clockwise)
+{
+    if (clockwise)
+    {
+        switch (mode)
+        {
+            case DisplayMode::TEMPERATURE: return DisplayMode::HUMIDITY;
+            case DisplayMode::HUMIDITY:    return DisplayMode::LIGHT;
+            case DisplayMode::LIGHT:       return DisplayMode::MOTION;
+            case DisplayMode::MOTION:      return DisplayMode::TEMPERATURE;
+        }
+    }
+    else
+    {
+        switch (mode)
+        {
+            case DisplayMode::TEMPERATURE: return DisplayMode::MOTION;
+            case DisplayMode::HUMIDITY:    return DisplayMode::TEMPERATURE;
+            case DisplayMode::LIGHT:       return DisplayMode::HUMIDITY;
+            case DisplayMode::MOTION:      return DisplayMode::LIGHT;
+        }
+    }
+
+    return DisplayMode::TEMPERATURE;
+}
+
+static const char *DisplayModeName(DisplayMode mode)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE: return "Temperature";
+        case DisplayMode::HUMIDITY:    return "Humidity";
+        case DisplayMode::LIGHT:       return "Light";
+        case DisplayMode::MOTION:      return "Motion";
+    }
+
+    return "Unknown";
+}
+
+static void InputTask(void *argument)
+{
+    (void)argument;
+
+    gpio_config_t encoder_config = {};
+    encoder_config.pin_bit_mask =
+        (1ULL << ENCODER_CLK_PIN) | (1ULL << ENCODER_DT_PIN);
+    encoder_config.mode = GPIO_MODE_INPUT;
+    encoder_config.pull_up_en = GPIO_PULLUP_ENABLE;
+    encoder_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    encoder_config.intr_type = GPIO_INTR_DISABLE;
+
+    esp_err_t result = gpio_config(&encoder_config);
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Encoder GPIO setup failed: %s", esp_err_to_name(result));
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    int previous_clk = gpio_get_level(ENCODER_CLK_PIN);
+
+    while (true)
+    {
+        int current_clk = gpio_get_level(ENCODER_CLK_PIN);
+
+        // A HIGH-to-LOW CLK transition marks a turn; DT tells us its direction.
+        if (previous_clk == 1 && current_clk == 0)
+        {
+            bool clockwise = (gpio_get_level(ENCODER_DT_PIN) == 1);
+            DisplayMode selected_mode;
+
+            portENTER_CRITICAL(&display_mode_mux);
+            current_display_mode =
+                NextDisplayMode(current_display_mode, clockwise);
+            selected_mode = current_display_mode;
+            portEXIT_CRITICAL(&display_mode_mux);
+
+            ESP_LOGI(TAG, "Encoder page: %s", DisplayModeName(selected_mode));
+        }
+
+        previous_clk = current_clk;
+        vTaskDelay(1);
     }
 }
 
@@ -362,5 +463,19 @@ extern "C" void app_main(void)
             TAG,
             "Could not create SensorTask"
         );
+    }
+
+    BaseType_t input_result = xTaskCreate(
+        InputTask,
+        "InputTask",
+        INPUT_TASK_STACK_SIZE,
+        nullptr,
+        INPUT_TASK_PRIORITY,
+        nullptr
+    );
+
+    if (input_result != pdPASS)
+    {
+        ESP_LOGE(TAG, "Could not create InputTask");
     }
 }
