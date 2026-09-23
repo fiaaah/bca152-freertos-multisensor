@@ -173,6 +173,7 @@ static void DisplayTask(void *argument)
     ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
     ssd1306_draw_text(display, 0, 16, "Temperature: 25.4 C", true);
     ssd1306_display(display);
+    bool display_was_active = true;
 
     SensorData sample{};
 
@@ -184,19 +185,37 @@ static void DisplayTask(void *argument)
                 &sample,
                 portMAX_DELAY) == pdPASS)
         {
-            char temperature_text[32];
-            snprintf(
-                temperature_text,
-                sizeof(temperature_text),
-                "Temperature: %.1f C",
-                sample.temperature
-            );
+            bool system_active;
 
-            // This task alone updates the OLED.
-            ssd1306_clear(display);
-            ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
-            ssd1306_draw_text(display, 0, 16, temperature_text, true);
-            ssd1306_display(display);
+            portENTER_CRITICAL(&display_mode_mux);
+            system_active = motion_detected;
+            portEXIT_CRITICAL(&display_mode_mux);
+
+            if (system_active)
+            {
+                char temperature_text[32];
+                snprintf(
+                    temperature_text,
+                    sizeof(temperature_text),
+                    "Temperature: %.1f C",
+                    sample.temperature
+                );
+
+                // This task alone updates the OLED.
+                ssd1306_clear(display);
+                ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
+                ssd1306_draw_text(display, 0, 16, temperature_text, true);
+                ssd1306_display(display);
+
+                display_was_active = true;
+            }
+            else if (display_was_active)
+            {
+                // Blank the screen once when the system becomes inactive.
+                ssd1306_clear(display);
+                ssd1306_display(display);
+                display_was_active = false;
+            }
 
             // Keep the serial readings while we transition from the logger.
             ESP_LOGI(TAG, "Temperature: %.1f C", sample.temperature);
