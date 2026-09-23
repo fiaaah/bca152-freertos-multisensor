@@ -10,6 +10,9 @@
 #include "dht22.h"
 #include "sensor_data.h"
 
+#include "driver/i2c_master.h"
+#include "ssd1306.h"
+
 #define DHT22_PIN GPIO_NUM_4
 
 #define LDR_ADC_UNIT ADC_UNIT_1
@@ -93,19 +96,80 @@ static int LdrReadPercent()
 }
 
 // Wait for the latest complete snapshot and print it to the serial monitor.
-static void SensorDataLogTask(void *argument)
+// This task is the only task that writes to the OLED.
+static void DisplayTask(void *argument)
 {
     (void)argument;
+
+    // Set up the I2C bus connected to the OLED.
+    i2c_master_bus_config_t bus_config = {};
+    bus_config.i2c_port = I2C_NUM_0;
+    bus_config.sda_io_num = GPIO_NUM_21;
+    bus_config.scl_io_num = GPIO_NUM_22;
+    bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus_config.glitch_ignore_cnt = 0;
+    bus_config.flags.enable_internal_pullup = true;
+
+    i2c_master_bus_handle_t i2c_bus = nullptr;
+    esp_err_t result = i2c_new_master_bus(&bus_config, &i2c_bus);
+
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(result));
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    // Describe the OLED: 128x64 pixels, I2C address 0x3C.
+    ssd1306_config_t display_config = {};
+    display_config.bus = SSD1306_I2C;
+    display_config.width = 128;
+    display_config.height = 64;
+    display_config.iface.i2c.port = I2C_NUM_0;
+    display_config.iface.i2c.addr = 0x3C;
+    display_config.iface.i2c.rst_gpio = GPIO_NUM_NC;
+
+    ssd1306_handle_t display = nullptr;
+    result = ssd1306_new_i2c(&display_config, &display);
+
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "OLED initialization failed: %s", esp_err_to_name(result));
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    // Show the required startup screen.
+    ssd1306_clear(display);
+    ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
+    ssd1306_draw_text(display, 0, 16, "Temperature: 25.4 C", true);
+    ssd1306_display(display);
 
     SensorData sample{};
 
     while (true)
     {
+        // Wait until SensorTask puts a new snapshot in the queue.
         if (xQueueReceive(
                 sensor_data_queue,
                 &sample,
                 portMAX_DELAY) == pdPASS)
         {
+            char temperature_text[32];
+            snprintf(
+                temperature_text,
+                sizeof(temperature_text),
+                "Temperature: %.1f C",
+                sample.temperature
+            );
+
+            // This task alone updates the OLED.
+            ssd1306_clear(display);
+            ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
+            ssd1306_draw_text(display, 0, 16, temperature_text, true);
+            ssd1306_display(display);
+
+            // Keep the serial readings while we transition from the logger.
             ESP_LOGI(TAG, "Temperature: %.1f C", sample.temperature);
             ESP_LOGI(TAG, "Humidity: %.1f %%", sample.humidity);
             ESP_LOGI(TAG, "LDR ADC level: %d %%", sample.lightLevel);
@@ -266,8 +330,8 @@ extern "C" void app_main(void)
     }
 
     BaseType_t consumer_result = xTaskCreate(
-        SensorDataLogTask,
-        "SensorDataLogTask",
+        DisplayTask,
+        "DisplayTask",
         DATA_TASK_STACK_SIZE,
         nullptr,
         DATA_TASK_PRIORITY,

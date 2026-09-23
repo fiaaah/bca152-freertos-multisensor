@@ -7,4 +7,7 @@ idf_component_register(
         "dht22.cpp"
     INCLUDE_DIRS
         "../include"
+    REQUIRES
+        chill-sam__ssd1306
+        esp_driver_i2c
 )
