@@ -31,6 +31,12 @@
 #define INPUT_TASK_STACK_SIZE 3072
 #define INPUT_TASK_PRIORITY 1
 
+#define PIR_PIN GPIO_NUM_27
+#define MOTION_INACTIVITY_TIMEOUT_MS 15000
+#define MOTION_TASK_POLL_MS 100
+#define MOTION_TASK_STACK_SIZE 3072
+#define MOTION_TASK_PRIORITY 1
+
 enum class DisplayMode
 {
     TEMPERATURE,
@@ -40,6 +46,7 @@ enum class DisplayMode
 };
 
 static DisplayMode current_display_mode = DisplayMode::TEMPERATURE;
+static bool motion_detected = false;
 static portMUX_TYPE display_mode_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static const char *TAG = "sensor";
@@ -278,6 +285,65 @@ static void InputTask(void *argument)
     }
 }
 
+static void MotionTask(void *argument)
+{
+    (void)argument;
+
+    gpio_config_t pir_config = {};
+    pir_config.pin_bit_mask = (1ULL << PIR_PIN);
+    pir_config.mode = GPIO_MODE_INPUT;
+    pir_config.pull_up_en = GPIO_PULLUP_DISABLE;
+    pir_config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    pir_config.intr_type = GPIO_INTR_DISABLE;
+
+    esp_err_t result = gpio_config(&pir_config);
+    if (result != ESP_OK)
+    {
+        ESP_LOGE(TAG, "PIR GPIO setup failed: %s", esp_err_to_name(result));
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    bool motion_active = false;
+    TickType_t last_motion_tick = 0;
+
+    while (true)
+    {
+        TickType_t now = xTaskGetTickCount();
+
+        if (gpio_get_level(PIR_PIN) == 1)
+        {
+            // The PIR is reporting motion, so restart the inactivity timer.
+            last_motion_tick = now;
+
+            if (!motion_active)
+            {
+                motion_active = true;
+
+                portENTER_CRITICAL(&display_mode_mux);
+                motion_detected = true;
+                portEXIT_CRITICAL(&display_mode_mux);
+
+                ESP_LOGI(TAG, "Motion detected");
+            }
+        }
+        else if (motion_active &&
+                 (now - last_motion_tick) >=
+                     pdMS_TO_TICKS(MOTION_INACTIVITY_TIMEOUT_MS))
+        {
+            motion_active = false;
+
+            portENTER_CRITICAL(&display_mode_mux);
+            motion_detected = false;
+            portEXIT_CRITICAL(&display_mode_mux);
+
+            ESP_LOGI(TAG, "Motion inactive after timeout");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(MOTION_TASK_POLL_MS));
+    }
+}
+
 static void SensorTask(void *argument)
 {
     (void)argument;
@@ -334,9 +400,13 @@ static void SensorTask(void *argument)
             );
         }
 
-        // motionDetected stays false until the PIR sensor is added.
+        // Copy the latest PIR state into this sensor snapshot.
         if (sample_is_valid)
         {
+            portENTER_CRITICAL(&display_mode_mux);
+            sample.motionDetected = motion_detected;
+            portEXIT_CRITICAL(&display_mode_mux);
+
             // This one-item queue keeps the latest sample if its reader is late.
             xQueueOverwrite(sensor_data_queue, &sample);
         }
@@ -478,4 +548,17 @@ extern "C" void app_main(void)
     {
         ESP_LOGE(TAG, "Could not create InputTask");
     }
+    BaseType_t motion_result = xTaskCreate(
+    MotionTask,
+    "MotionTask",
+    MOTION_TASK_STACK_SIZE,
+    nullptr,
+    MOTION_TASK_PRIORITY,
+    nullptr
+);
+
+    if (motion_result != pdPASS)
+{
+    ESP_LOGE(TAG, "Could not create MotionTask");
+}
 }
