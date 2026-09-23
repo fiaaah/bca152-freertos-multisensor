@@ -7,6 +7,7 @@
 #include "esp_adc/adc_oneshot.h"
 
 #include "dht22.h"
+#include "sensor_data.h"
 
 #define DHT22_PIN GPIO_NUM_4
 
@@ -95,7 +96,9 @@ static void SensorTask(void *argument)
 
     while (true)
     {
-        DHT22Data dht_data;
+        // Collect readings into the data object that Part V will queue.
+        SensorData sample{};
+        DHT22Data dht_data{};
 
         /*
          * Read DHT22.
@@ -105,16 +108,19 @@ static void SensorTask(void *argument)
 
         if (dht_result == ESP_OK)
         {
+            sample.temperature = dht_data.temperature;
+            sample.humidity = dht_data.humidity;
+
             ESP_LOGI(
                 TAG,
                 "Temperature: %.1f C",
-                dht_data.temperature
+                sample.temperature
             );
 
             ESP_LOGI(
                 TAG,
                 "Humidity: %.1f %%",
-                dht_data.humidity
+                sample.humidity
             );
         }
         else
@@ -134,12 +140,15 @@ static void SensorTask(void *argument)
 
         if (light_level >= 0)
         {
+            sample.lightLevel = light_level;
+
             ESP_LOGI(
                 TAG,
                 "LDR ADC level: %d %%",
-                light_level
+                sample.lightLevel
             );
         }
+
         else
         {
             ESP_LOGE(
@@ -147,6 +156,8 @@ static void SensorTask(void *argument)
                 "LDR read failed"
             );
         }
+
+        // Value-initialization leaves motionDetected false until the PIR is added.
 
         /*
          * Maintain a stable 2-second period.
