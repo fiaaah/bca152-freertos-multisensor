@@ -5,6 +5,7 @@ idf_component_register(
     SRCS
         "main.cpp"
         "dht22.cpp"
+        "alarm_logic.cpp"
     INCLUDE_DIRS
         "../include"
     REQUIRES
