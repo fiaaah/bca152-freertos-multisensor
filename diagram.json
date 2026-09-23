@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "author": "BCA152",
+  "author": "Sofiah Mariell Silao",
   "editor": "wokwi",
   "parts": [
     {
@@ -8,15 +8,28 @@
       "id": "esp",
       "top": 0,
       "left": 0,
-      "attrs": {}
+      "attrs": { "builder": "esp-idf" }
+    },
+    {
+      "type": "wokwi-dht22",
+      "id": "dht1",
+      "top": 0,
+      "left": 180,
+      "attrs": { "temperature": "25.4", "humidity": "61.2" }
     }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
-    [ "esp:RX", "$serialMonitor:TX", "", [] ]
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [
+      "esp:3V3",
+      "dht1:VCC",
+      "green",
+      [ "h-4.61", "v-38.4", "h163.2", "v153.6", "h28.8", "v-9.6" ]
+    ],
+    [ "esp:GND.3", "dht1:GND", "black", [ "h52.84", "v67.2", "h48" ] ],
+    [ "esp:4", "dht1:SDA", "green", [ "h43.24", "v19.2", "h57.6" ] ]
   ],
-  "serialMonitor": {
-    "display": "always",
-    "newline": "lf"
-  }
+  "serialMonitor": { "display": "always", "newline": "lf" },
+  "dependencies": {}
 }
