@@ -1,187 +1,212 @@
 #include "dht22.h"
 
-#include <stdint.h> // Fixed-width fields used in the DHT22 data frame.
+#include <stdint.h>
 
 #include "driver/gpio.h"
 #include "esp_rom_sys.h"
-#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 
-#define DHT_TIMEOUT_US 200
+#define DHT22_START_TIME_US 20000
+#define DHT22_TIMEOUT_US    100
+#define DHT22_SAMPLE_US     1
+#define DHT22_BIT_SAMPLE_US 40
 
-static const char *s_error_stage = "not started";
+static gpio_num_t dht22_pin;
 
-const char *dht22_error_stage(void)
+static portMUX_TYPE dht22_mux =
+    portMUX_INITIALIZER_UNLOCKED;
+
+static int wait_for_level(
+    int target_level,
+    uint32_t timeout_us)
 {
-    return s_error_stage;
+    uint32_t elapsed = 0;
+
+    while (gpio_get_level(dht22_pin) != target_level)
+    {
+        if (elapsed >= timeout_us)
+        {
+            return -1;
+        }
+
+        esp_rom_delay_us(DHT22_SAMPLE_US);
+        elapsed += DHT22_SAMPLE_US;
+    }
+
+    return elapsed;
 }
 
-static esp_err_t wait_for_level(gpio_num_t pin, int level, int *duration_us)
+esp_err_t dht22_init(gpio_num_t pin)
 {
-    int64_t start_us = esp_timer_get_time();
+    dht22_pin = pin;
 
-    // Stop waiting if the expected signal edge does not arrive in time.
-    while (gpio_get_level(pin) != level) {
-        if ((esp_timer_get_time() - start_us) > DHT_TIMEOUT_US) {
+    gpio_config_t config = {
+        .pin_bit_mask = (1ULL << pin),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+
+    esp_err_t result = gpio_config(&config);
+
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+
+    return gpio_set_level(dht22_pin, 1);
+}
+
+esp_err_t dht22_read(DHT22Data *data)
+{
+    if (data == nullptr)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t bytes[5] = {0};
+    esp_err_t result;
+
+    /*
+     * Send the DHT22 start signal.
+     */
+    result = gpio_set_direction(
+        dht22_pin,
+        GPIO_MODE_OUTPUT_OD
+    );
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+
+    result = gpio_set_level(
+        dht22_pin,
+        0
+    );
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+
+    esp_rom_delay_us(
+        DHT22_START_TIME_US
+    );
+
+    result = gpio_set_level(
+        dht22_pin,
+        1
+    );
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+
+    result = gpio_set_direction(
+        dht22_pin,
+        GPIO_MODE_INPUT
+    );
+    if (result != ESP_OK)
+    {
+        return result;
+    }
+
+    /*
+     * Wait for the DHT22 response.
+     */
+    if (wait_for_level(0, DHT22_TIMEOUT_US) < 0)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (wait_for_level(1, DHT22_TIMEOUT_US) < 0)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (wait_for_level(0, DHT22_TIMEOUT_US) < 0)
+    {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    /*
+     * Read all 40 data bits.
+     */
+    portENTER_CRITICAL(&dht22_mux);
+
+    for (int bit = 0; bit < 40; bit++)
+    {
+        if (wait_for_level(1, DHT22_TIMEOUT_US) < 0)
+        {
+            portEXIT_CRITICAL(&dht22_mux);
+            return ESP_ERR_TIMEOUT;
+        }
+
+        esp_rom_delay_us(DHT22_BIT_SAMPLE_US);
+
+        int level = gpio_get_level(dht22_pin);
+
+        if (level == 1)
+        {
+            int byte_index = bit / 8;
+            int bit_index = 7 - (bit % 8);
+
+            bytes[byte_index] |=
+                (1U << bit_index);
+        }
+
+        if (wait_for_level(0, DHT22_TIMEOUT_US) < 0)
+        {
+            portEXIT_CRITICAL(&dht22_mux);
             return ESP_ERR_TIMEOUT;
         }
     }
 
-    *duration_us = (int)(esp_timer_get_time() - start_us);
-    return ESP_OK;
-}
-
-esp_err_t dht22_read(
-    gpio_num_t pin,
-    float *temperature,
-    float *humidity)
-{
-    // The sensor sends 40 bits: humidity, temperature, then checksum.
-    uint8_t data[5] = {0, 0, 0, 0, 0};
-    int pulse_us = 0;
-    esp_err_t err;
-
-    if (temperature == NULL || humidity == NULL) {
-        s_error_stage = "invalid argument";
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    s_error_stage = "configuring output";
-    /*
-     * Send start signal.
-     * Pull DATA low for at least 1 ms.
-     */
-    // Open-drain lets the ESP32 pull the shared data wire low or release it.
-    err = gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT_OD);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = gpio_set_level(pin, 0);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    esp_rom_delay_us(1200);
+    portEXIT_CRITICAL(&dht22_mux);
 
     /*
-     * Release the bus.
+     * Check the checksum.
      */
-    // In open-drain mode, setting 1 releases the wire for the sensor to drive.
-    err = gpio_set_level(pin, 1);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    /*
-     * DHT22 response:
-     * LOW ~80 us
-     * HIGH ~80 us
-     */
-    s_error_stage = "waiting for response LOW";
-    err = wait_for_level(pin, 0, &pulse_us);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    s_error_stage = "waiting for response HIGH";
-    err = wait_for_level(pin, 1, &pulse_us);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    s_error_stage = "waiting for first data LOW";
-    err = wait_for_level(pin, 0, &pulse_us);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    /*
-     * Read 40 bits.
-     */
-    for (int bit = 0; bit < 40; bit++) {
-
-        /*
-         * Each bit begins with a LOW pulse.
-         */
-        s_error_stage = "waiting for data bit LOW";
-        err = wait_for_level(pin, 0, &pulse_us);
-        if (err != ESP_OK) {
-            return err;
-        }
-
-        /*
-         * Measure HIGH pulse.
-         *
-         * Short HIGH = 0
-         * Long HIGH  = 1
-         */
-        int high_time_us = 0;
-        s_error_stage = "measuring data bit HIGH";
-        err = wait_for_level(pin, 1, &pulse_us);
-        if (err != ESP_OK) {
-            return err;
-        }
-
-        err = wait_for_level(pin, 0, &high_time_us);
-        if (err != ESP_OK) {
-            return err;
-        }
-
-        // Shift in the next bit; a longer HIGH pulse represents binary 1.
-        data[bit / 8] <<= 1;
-
-        if (high_time_us > 40) {
-            data[bit / 8] |= 1;
-        }
-    }
-
-    /*
-     * Checksum verification.
-     */
-    // Reject incomplete or corrupted readings before returning measurements.
     uint8_t checksum =
-        (uint8_t)(data[0] +
-                  data[1] +
-                  data[2] +
-                  data[3]);
+        bytes[0] +
+        bytes[1] +
+        bytes[2] +
+        bytes[3];
 
-    if (checksum != data[4]) {
-        s_error_stage = "checksum mismatch";
-        return ESP_FAIL;
+    if (checksum != bytes[4])
+    {
+        return ESP_ERR_INVALID_CRC;
     }
 
     /*
-     * Humidity:
-     * first 16 bits / 10
+     * Convert humidity.
      */
     uint16_t raw_humidity =
-        ((uint16_t)data[0] << 8) |
-        data[1];
+        ((uint16_t)bytes[0] << 8) |
+        bytes[1];
 
-    *humidity = raw_humidity / 10.0f;
+    data->humidity =
+        raw_humidity / 10.0f;
 
     /*
-     * Temperature:
-     * next 16 bits / 10
+     * Convert temperature.
      */
     uint16_t raw_temperature =
-        ((uint16_t)(data[2] & 0x7F) << 8) |
-        data[3];
+        ((uint16_t)bytes[2] << 8) |
+        bytes[3];
 
-    *temperature = raw_temperature / 10.0f;
+    if (raw_temperature & 0x8000)
+    {
+        raw_temperature &= 0x7FFF;
 
-    /*
-     * Bit 15 indicates negative temperature.
-     */
-    if (data[2] & 0x80) {
-        *temperature = -*temperature;
+        data->temperature =
+            -(raw_temperature / 10.0f);
+    }
+    else
+    {
+        data->temperature =
+            raw_temperature / 10.0f;
     }
 
-    s_error_stage = "success";
     return ESP_OK;
 }
