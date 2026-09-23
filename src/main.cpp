@@ -45,6 +45,12 @@ enum class DisplayMode
     MOTION
 };
 
+enum class MotionState
+{
+    ACTIVE,
+    INACTIVE
+};
+
 static DisplayMode current_display_mode = DisplayMode::TEMPERATURE;
 static bool motion_detected = false;
 static portMUX_TYPE display_mode_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -304,7 +310,7 @@ static void MotionTask(void *argument)
         return;
     }
 
-    bool motion_active = false;
+    MotionState motion_state = MotionState::INACTIVE;
     TickType_t last_motion_tick = 0;
 
     while (true)
@@ -316,9 +322,9 @@ static void MotionTask(void *argument)
             // The PIR is reporting motion, so restart the inactivity timer.
             last_motion_tick = now;
 
-            if (!motion_active)
+            if (motion_state == MotionState::INACTIVE)
             {
-                motion_active = true;
+                motion_state = MotionState::ACTIVE;
 
                 portENTER_CRITICAL(&display_mode_mux);
                 motion_detected = true;
@@ -327,11 +333,11 @@ static void MotionTask(void *argument)
                 ESP_LOGI(TAG, "Motion detected");
             }
         }
-        else if (motion_active &&
+        else if (motion_state == MotionState::ACTIVE &&
                  (now - last_motion_tick) >=
                      pdMS_TO_TICKS(MOTION_INACTIVITY_TIMEOUT_MS))
         {
-            motion_active = false;
+            motion_state = MotionState::INACTIVE;
 
             portENTER_CRITICAL(&display_mode_mux);
             motion_detected = false;
