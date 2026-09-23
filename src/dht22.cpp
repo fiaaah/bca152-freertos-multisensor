@@ -19,6 +19,7 @@ static esp_err_t wait_for_level(gpio_num_t pin, int level, int *duration_us)
 {
     int64_t start_us = esp_timer_get_time();
 
+    // Stop waiting if the expected signal edge does not arrive in time.
     while (gpio_get_level(pin) != level) {
         if ((esp_timer_get_time() - start_us) > DHT_TIMEOUT_US) {
             return ESP_ERR_TIMEOUT;
@@ -34,6 +35,7 @@ esp_err_t dht22_read(
     float *temperature,
     float *humidity)
 {
+    // The sensor sends 40 bits: humidity, temperature, then checksum.
     uint8_t data[5] = {0, 0, 0, 0, 0};
     int pulse_us = 0;
     esp_err_t err;
@@ -48,6 +50,7 @@ esp_err_t dht22_read(
      * Send start signal.
      * Pull DATA low for at least 1 ms.
      */
+    // Open-drain lets the ESP32 pull the shared data wire low or release it.
     err = gpio_set_direction(pin, GPIO_MODE_INPUT_OUTPUT_OD);
     if (err != ESP_OK) {
         return err;
@@ -68,6 +71,7 @@ esp_err_t dht22_read(
     /*
      * Release the bus.
      */
+    // In open-drain mode, setting 1 releases the wire for the sensor to drive.
     err = gpio_set_level(pin, 1);
     if (err != ESP_OK) {
         return err;
@@ -128,6 +132,7 @@ esp_err_t dht22_read(
             return err;
         }
 
+        // Shift in the next bit; a longer HIGH pulse represents binary 1.
         data[bit / 8] <<= 1;
 
         if (high_time_us > 40) {
@@ -138,6 +143,7 @@ esp_err_t dht22_read(
     /*
      * Checksum verification.
      */
+    // Reject incomplete or corrupted readings before returning measurements.
     uint8_t checksum =
         (uint8_t)(data[0] +
                   data[1] +

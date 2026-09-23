@@ -14,10 +14,12 @@
 
 static const char *TAG = "dht22_test";
 
+// Runs sensor sampling independently from app_main().
 static void SensorTask(void *argument)
 {
     (void)argument;
 
+    // Keep the same scheduled wake time as the task repeats.
     TickType_t last_wake_time = xTaskGetTickCount();
     float temperature = 0.0f;
     float humidity = 0.0f;
@@ -33,17 +35,20 @@ static void SensorTask(void *argument)
                      esp_err_to_name(result), dht22_error_stage());
         }
 
+        // Unlike a delay after each read, this keeps a steady 2-second period.
         vTaskDelayUntil(&last_wake_time,
                         pdMS_TO_TICKS(SENSOR_SAMPLE_PERIOD_MS));
     }
 }
 
+// ESP-IDF calls app_main by its C symbol name, even though this file is C++.
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "BCA152 FreeRTOS Multisensor");
     ESP_LOGI(TAG, "System starting...");
     ESP_LOGI(TAG, "Part IV - DHT22 Test");
 
+    // Create SensorTask at priority 2; the task blocks between samples.
     BaseType_t result = xTaskCreate(
         SensorTask,
         "SensorTask",

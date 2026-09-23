@@ -14,6 +14,8 @@
  * @return ESP_OK if reading is valid, otherwise ESP_FAIL.
  */
 esp_err_t dht22_read(gpio_num_t pin, float *temperature, float *humidity);
+
+// Returns the stage where the most recent read failed, for serial diagnostics.
 const char *dht22_error_stage(void);
 
 #endif
