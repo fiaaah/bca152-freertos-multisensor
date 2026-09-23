@@ -1,4 +1,5 @@
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
@@ -17,11 +18,15 @@
 #define SENSOR_SAMPLE_PERIOD_MS 2000
 #define SENSOR_TASK_STACK_SIZE 4096
 #define SENSOR_TASK_PRIORITY 2
+#define DATA_TASK_STACK_SIZE 4096
+#define DATA_TASK_PRIORITY 1
 #define ADC_RAW_MAX 4095
+#define SENSOR_QUEUE_LENGTH 1
 
 static const char *TAG = "sensor";
 
 static adc_oneshot_unit_handle_t adc_handle;
+static QueueHandle_t sensor_data_queue = nullptr;
 
 static esp_err_t LdrInit()
 {
@@ -87,6 +92,27 @@ static int LdrReadPercent()
     return percent;
 }
 
+// Wait for the latest complete snapshot and print it to the serial monitor.
+static void SensorDataLogTask(void *argument)
+{
+    (void)argument;
+
+    SensorData sample{};
+
+    while (true)
+    {
+        if (xQueueReceive(
+                sensor_data_queue,
+                &sample,
+                portMAX_DELAY) == pdPASS)
+        {
+            ESP_LOGI(TAG, "Temperature: %.1f C", sample.temperature);
+            ESP_LOGI(TAG, "Humidity: %.1f %%", sample.humidity);
+            ESP_LOGI(TAG, "LDR ADC level: %d %%", sample.lightLevel);
+        }
+    }
+}
+
 static void SensorTask(void *argument)
 {
     (void)argument;
@@ -99,6 +125,7 @@ static void SensorTask(void *argument)
         // Collect readings into the data object that Part V will queue.
         SensorData sample{};
         DHT22Data dht_data{};
+        bool sample_is_valid = true;
 
         /*
          * Read DHT22.
@@ -111,20 +138,10 @@ static void SensorTask(void *argument)
             sample.temperature = dht_data.temperature;
             sample.humidity = dht_data.humidity;
 
-            ESP_LOGI(
-                TAG,
-                "Temperature: %.1f C",
-                sample.temperature
-            );
-
-            ESP_LOGI(
-                TAG,
-                "Humidity: %.1f %%",
-                sample.humidity
-            );
         }
         else
         {
+            sample_is_valid = false;
             ESP_LOGE(
                 TAG,
                 "DHT22 read failed: %s",
@@ -142,22 +159,22 @@ static void SensorTask(void *argument)
         {
             sample.lightLevel = light_level;
 
-            ESP_LOGI(
-                TAG,
-                "LDR ADC level: %d %%",
-                sample.lightLevel
-            );
         }
-
         else
         {
+            sample_is_valid = false;
             ESP_LOGE(
                 TAG,
                 "LDR read failed"
             );
         }
 
-        // Value-initialization leaves motionDetected false until the PIR is added.
+        // motionDetected stays false until the PIR sensor is added.
+        if (sample_is_valid)
+        {
+            // This one-item queue keeps the latest sample if its reader is late.
+            xQueueOverwrite(sensor_data_queue, &sample);
+        }
 
         /*
          * Maintain a stable 2-second period.
@@ -235,6 +252,35 @@ extern "C" void app_main(void)
         TAG,
         "LDR initialized successfully."
     );
+
+    // One slot is sufficient when consumers only need the latest sensor data.
+    sensor_data_queue = xQueueCreate(
+        SENSOR_QUEUE_LENGTH,
+        sizeof(SensorData)
+    );
+
+    if (sensor_data_queue == nullptr)
+    {
+        ESP_LOGE(TAG, "Could not create sensor data queue");
+        return;
+    }
+
+    BaseType_t consumer_result = xTaskCreate(
+        SensorDataLogTask,
+        "SensorDataLogTask",
+        DATA_TASK_STACK_SIZE,
+        nullptr,
+        DATA_TASK_PRIORITY,
+        nullptr
+    );
+
+    if (consumer_result != pdPASS)
+    {
+        ESP_LOGE(TAG, "Could not create SensorDataLogTask");
+        vQueueDelete(sensor_data_queue);
+        sensor_data_queue = nullptr;
+        return;
+    }
 
     BaseType_t task_result =
         xTaskCreate(
