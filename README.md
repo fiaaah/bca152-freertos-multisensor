@@ -154,17 +154,17 @@ platformio.ini PlatformIO ESP32 and native test environments
 
 ## Getting Started
 
-Install [Visual Studio Code](https://code.visualstudio.com/), the PlatformIO IDE extension, and the Wokwi extension. Clone the repository and open its root folder in VS Code. PlatformIO installs the ESP32 platform and required build tools on the first build. The project uses ESP-IDF through PlatformIO and includes an ESP-IDF component dependency for the SSD1306 driver.
+Install [Visual Studio Code](https://code.visualstudio.com/), the PlatformIO IDE extension, and the Wokwi extension. Clone the repository and open its root folder in VS Code. PlatformIO installs the ESP32 platform and required build tools on the first build. The project uses ESP-IDF through PlatformIO; the SSD1306 driver is included as a local ESP-IDF component in `components/ssd1306`.
 
 ## Building the Project
 
 From the project root, run:
 
 ```powershell
-pio run -e esp32dev
+pio run
 ```
 
-The build output used by Wokwi is `.pio/build/esp32dev/firmware.bin`; the ELF file is `.pio/build/esp32dev/firmware.elf`.
+The default PlatformIO environment is `esp32dev`, so `pio run` builds the ESP32 firmware. The output used by Wokwi is `.pio/build/esp32dev/firmware.bin`; the ELF file is `.pio/build/esp32dev/firmware.elf`. Run the host-side tests separately with `pio test -e native`.
 
 ## Running the Wokwi Simulation
 
