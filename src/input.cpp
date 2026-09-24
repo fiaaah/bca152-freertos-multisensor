@@ -52,6 +52,7 @@ void InputTask(void *argument)
             selected_mode = current_display_mode;
             portEXIT_CRITICAL(&display_mode_mux);
 
+            xQueueOverwrite(display_mode_queue, &selected_mode);
             SERIAL_LOGI(TAG, "Encoder page: %s", DisplayModeName(selected_mode));
         }
 

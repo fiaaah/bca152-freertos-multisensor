@@ -13,6 +13,7 @@
 
 #include "rtos_objects.h"
 #include "sensor_data.h"
+#include "system_state.h"
 
 namespace
 {
@@ -60,39 +61,80 @@ void DisplayTask(void *argument)
 
     ssd1306_clear(display);
     ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
-    ssd1306_draw_text(display, 0, 16, "Temperature: 25.4 C", true);
+    ssd1306_draw_text(display, 0, 16, "Waiting for data", true);
     ssd1306_display(display);
     bool display_was_active = true;
+    bool have_sample = false;
+    DisplayMode current_mode = DisplayMode::TEMPERATURE;
 
     SensorData sample{};
     while (true)
     {
-        if (xQueueReceive(sensor_data_queue, &sample, portMAX_DELAY) == pdPASS)
+        // Poll both queues so a page change appears without waiting for another sensor sample.
+        bool sample_updated =
+            xQueueReceive(sensor_data_queue, &sample, pdMS_TO_TICKS(100)) == pdPASS;
+        if (sample_updated)
         {
-            EventBits_t event_bits = xEventGroupGetBits(system_events);
-            bool system_active = (event_bits & EVENT_ACTIVE) != 0;
-
-            if (system_active)
-            {
-                char temperature_text[32];
-                snprintf(temperature_text, sizeof(temperature_text),
-                         "Temperature: %.1f C", sample.temperature);
-                ssd1306_clear(display);
-                ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
-                ssd1306_draw_text(display, 0, 16, temperature_text, true);
-                ssd1306_display(display);
-                display_was_active = true;
-            }
-            else if (display_was_active)
-            {
-                ssd1306_clear(display);
-                ssd1306_display(display);
-                display_was_active = false;
-            }
-
+            have_sample = true;
             SERIAL_LOGI(TAG, "Temperature: %.1f C", sample.temperature);
             SERIAL_LOGI(TAG, "Humidity: %.1f %%", sample.humidity);
             SERIAL_LOGI(TAG, "LDR ADC level: %d %%", sample.lightLevel);
         }
+
+        DisplayMode requested_mode;
+        bool mode_updated =
+            xQueueReceive(display_mode_queue, &requested_mode, 0) == pdPASS;
+        if (mode_updated)
+        {
+            current_mode = requested_mode;
+        }
+
+        EventBits_t event_bits = xEventGroupGetBits(system_events);
+        bool system_active = (event_bits & EVENT_ACTIVE) != 0;
+
+        if (system_active && (sample_updated || mode_updated || !display_was_active))
+        {
+            ssd1306_clear(display);
+            ssd1306_draw_text(display, 0, 0, "ROOM MONITOR", true);
+
+            if (!have_sample)
+            {
+                ssd1306_draw_text(display, 0, 16, "Waiting for data", true);
+            }
+            else
+            {
+                char value_text[32];
+                switch (current_mode)
+                {
+                    case DisplayMode::TEMPERATURE:
+                        snprintf(value_text, sizeof(value_text), "Temp: %.1f C", sample.temperature);
+                        break;
+                    case DisplayMode::HUMIDITY:
+                        snprintf(value_text, sizeof(value_text), "Humidity: %.1f %%", sample.humidity);
+                        break;
+                    case DisplayMode::LIGHT:
+                        snprintf(value_text, sizeof(value_text), "Light: %d %%", sample.lightLevel);
+                        break;
+                    case DisplayMode::MOTION:
+                        snprintf(value_text, sizeof(value_text), "Motion: %s",
+                                 sample.motionDetected ? "Detected" : "None");
+                        break;
+                    default:
+                        snprintf(value_text, sizeof(value_text), "Unknown page");
+                        break;
+                }
+                ssd1306_draw_text(display, 0, 16, value_text, true);
+            }
+
+            ssd1306_display(display);
+        }
+        else if (!system_active && display_was_active)
+        {
+            // Clear once on entry to INACTIVE; the task remains the OLED's only writer.
+            ssd1306_clear(display);
+            ssd1306_display(display);
+        }
+
+        display_was_active = system_active;
     }
 }

@@ -7,6 +7,7 @@
 
 // Shared FreeRTOS objects are defined once in src/rtos_objects.cpp.
 extern QueueHandle_t sensor_data_queue;
+extern QueueHandle_t display_mode_queue;
 extern EventGroupHandle_t system_events;
 extern SemaphoreHandle_t serial_mutex;
 

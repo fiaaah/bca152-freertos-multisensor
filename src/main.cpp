@@ -9,11 +9,13 @@
 #include "rtos_objects.h"
 #include "sensor_data.h"
 #include "sensors.h"
+#include "system_state.h"
 
 namespace
 {
 constexpr char TAG[] = "sensor";
 constexpr UBaseType_t SENSOR_QUEUE_LENGTH = 1;
+constexpr UBaseType_t DISPLAY_MODE_QUEUE_LENGTH = 1;
 
 // Stack sizes and priorities follow the lab's suggested starting schedule.
 constexpr uint32_t SENSOR_TASK_STACK_SIZE = 4096;
@@ -62,10 +64,28 @@ extern "C" void app_main(void)
     }
     SERIAL_LOGI(TAG, "Sensors initialized successfully.");
 
+    result = AlarmInit();
+    if (result != ESP_OK)
+    {
+        SERIAL_LOGE(TAG, "Buzzer initialization failed: %s", esp_err_to_name(result));
+        return;
+    }
+    SERIAL_LOGI(TAG, "Buzzer initialized successfully.");
+
     sensor_data_queue = xQueueCreate(SENSOR_QUEUE_LENGTH, sizeof(SensorData));
     if (sensor_data_queue == nullptr)
     {
         SERIAL_LOGE(TAG, "Could not create sensor data queue");
+        return;
+    }
+
+    // InputTask publishes the latest selection; DisplayTask consumes it and owns OLED writes.
+    display_mode_queue = xQueueCreate(DISPLAY_MODE_QUEUE_LENGTH, sizeof(DisplayMode));
+    if (display_mode_queue == nullptr)
+    {
+        SERIAL_LOGE(TAG, "Could not create display mode queue");
+        vQueueDelete(sensor_data_queue);
+        sensor_data_queue = nullptr;
         return;
     }
 
@@ -74,7 +94,9 @@ extern "C" void app_main(void)
     {
         SERIAL_LOGE(TAG, "Could not create system event group");
         vQueueDelete(sensor_data_queue);
+        vQueueDelete(display_mode_queue);
         sensor_data_queue = nullptr;
+        display_mode_queue = nullptr;
         return;
     }
 

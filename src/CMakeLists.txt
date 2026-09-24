@@ -18,4 +18,5 @@ idf_component_register(
     REQUIRES
         ssd1306
         esp_driver_i2c
+        esp_driver_ledc
 )
