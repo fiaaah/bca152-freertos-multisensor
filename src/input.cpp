@@ -57,6 +57,7 @@ void InputTask(void *argument)
         }
 
         previous_clk = current_clk;
+        // Yield the CPU so other FreeRTOS tasks can run.
         vTaskDelay(1);
     }
 }
