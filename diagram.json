@@ -33,7 +33,13 @@
     },
     { "type": "wokwi-ky-040", "id": "encoder1", "top": 222.5, "left": -96.8, "attrs": {} },
     { "type": "wokwi-pir-motion-sensor", "id": "pir1", "top": 80.8, "left": -103.38, "attrs": {} },
-    { "type": "wokwi-buzzer", "id": "buzzer1", "top": 100, "left": 300, "attrs": { "volume": "0.3" } }
+    {
+      "type": "wokwi-buzzer",
+      "id": "buzzer1",
+      "top": 100,
+      "left": 300,
+      "attrs": { "volume": "0.3" }
+    }
   ],
   "connections": [
     [ "esp:TX", "$serialMonitor:RX", "", [] ],
@@ -60,8 +66,8 @@
     [ "pir1:VCC", "esp:3V3", "red", [ "v19.2", "h124.8", "v-201.6" ] ],
     [ "pir1:GND", "esp:GND.3", "black", [ "v9.6", "h268.54", "v-134.4" ] ],
     [ "pir1:OUT", "esp:27", "violet", [ "v28.8", "h95.86", "v-115.2" ] ],
-    [ "buzzer1:2", "esp:26", "green", [] ],
-    [ "buzzer1:1", "esp:GND.3", "black", [] ]
+    [ "buzzer1:2", "esp:26", "green", [ "v27.2", "h-308.2", "v-134.4" ] ],
+    [ "buzzer1:1", "esp:GND.3", "black", [ "h-77.4", "v-136" ] ]
   ],
   "serialMonitor": { "display": "always", "newline": "lf" },
   "dependencies": {}
