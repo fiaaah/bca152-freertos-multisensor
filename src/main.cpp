@@ -1,6 +1,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 
 #include "driver/gpio.h"
 #include "esp_err.h"
@@ -9,6 +10,7 @@
 
 #include "dht22.h"
 #include "sensor_data.h"
+#include "alarm_logic.h"
 
 #include "driver/i2c_master.h"
 #include "ssd1306.h"
@@ -36,6 +38,23 @@
 #define MOTION_TASK_POLL_MS 100
 #define MOTION_TASK_STACK_SIZE 3072
 #define MOTION_TASK_PRIORITY 1
+#define ALARM_TASK_STACK_SIZE 3072
+#define ALARM_TASK_PRIORITY 1
+
+/*
+ * EVENT_ACTIVE: MotionTask sets on motion and clears after the
+ * inactivity timeout. DisplayTask consumes it to blank or enable the OLED.
+ *
+ * EVENT_MOTION: MotionTask sets while PIR OUT is HIGH and clears when it
+ * goes LOW. SensorTask consumes it for SensorData.motionDetected.
+ *
+ * EVENT_ALARM: SensorTask sets when temperature is outside the normal range
+ * and clears when it returns to normal. AlarmTask consumes and logs changes;
+ * buzzer control can be added to that task when the buzzer is introduced.
+ */
+#define EVENT_ACTIVE BIT0
+#define EVENT_MOTION BIT1
+#define EVENT_ALARM  BIT2
 
 enum class DisplayMode
 {
@@ -52,13 +71,13 @@ enum class MotionState
 };
 
 static DisplayMode current_display_mode = DisplayMode::TEMPERATURE;
-static bool motion_detected = false;
 static portMUX_TYPE display_mode_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static const char *TAG = "sensor";
 
 static adc_oneshot_unit_handle_t adc_handle;
 static QueueHandle_t sensor_data_queue = nullptr;
+static EventGroupHandle_t system_events = nullptr;
 
 static esp_err_t LdrInit()
 {
@@ -124,8 +143,7 @@ static int LdrReadPercent()
     return percent;
 }
 
-// Wait for the latest complete snapshot and print it to the serial monitor.
-// This task is the only task that writes to the OLED.
+// Consume sensor snapshots and keep exclusive ownership of OLED writes.
 static void DisplayTask(void *argument)
 {
     (void)argument;
@@ -185,11 +203,8 @@ static void DisplayTask(void *argument)
                 &sample,
                 portMAX_DELAY) == pdPASS)
         {
-            bool system_active;
-
-            portENTER_CRITICAL(&display_mode_mux);
-            system_active = motion_detected;
-            portEXIT_CRITICAL(&display_mode_mux);
+            EventBits_t event_bits = xEventGroupGetBits(system_events);
+            bool system_active = (event_bits & EVENT_ACTIVE) != 0;
 
             if (system_active)
             {
@@ -335,37 +350,69 @@ static void MotionTask(void *argument)
     while (true)
     {
         TickType_t now = xTaskGetTickCount();
+        int pir_level = gpio_get_level(PIR_PIN);
 
-        if (gpio_get_level(PIR_PIN) == 1)
+        if (pir_level == 1)
         {
-            // The PIR is reporting motion, so restart the inactivity timer.
+            // PIR output is high: motion is being reported now.
             last_motion_tick = now;
+            xEventGroupSetBits(system_events, EVENT_MOTION);
 
             if (motion_state == MotionState::INACTIVE)
             {
                 motion_state = MotionState::ACTIVE;
-
-                portENTER_CRITICAL(&display_mode_mux);
-                motion_detected = true;
-                portEXIT_CRITICAL(&display_mode_mux);
+                xEventGroupSetBits(system_events, EVENT_ACTIVE);
 
                 ESP_LOGI(TAG, "Motion detected");
             }
         }
-        else if (motion_state == MotionState::ACTIVE &&
-                 (now - last_motion_tick) >=
-                     pdMS_TO_TICKS(MOTION_INACTIVITY_TIMEOUT_MS))
+        else
         {
-            motion_state = MotionState::INACTIVE;
+            // Clear this bit as soon as the PIR output goes low.
+            xEventGroupClearBits(system_events, EVENT_MOTION);
 
-            portENTER_CRITICAL(&display_mode_mux);
-            motion_detected = false;
-            portEXIT_CRITICAL(&display_mode_mux);
+            if (motion_state == MotionState::ACTIVE &&
+                (now - last_motion_tick) >=
+                    pdMS_TO_TICKS(MOTION_INACTIVITY_TIMEOUT_MS))
+            {
+                motion_state = MotionState::INACTIVE;
+                xEventGroupClearBits(system_events, EVENT_ACTIVE);
 
-            ESP_LOGI(TAG, "Motion inactive after timeout");
+                ESP_LOGI(TAG, "Motion inactive after timeout");
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(MOTION_TASK_POLL_MS));
+    }
+}
+
+// Observe the alarm state bit. Hardware buzzer control can be added here later.
+static void AlarmTask(void *argument)
+{
+    (void)argument;
+
+    bool alarm_was_active = false;
+
+    while (true)
+    {
+        EventBits_t event_bits = xEventGroupGetBits(system_events);
+        bool alarm_is_active = (event_bits & EVENT_ALARM) != 0;
+
+        if (alarm_is_active != alarm_was_active)
+        {
+            if (alarm_is_active)
+            {
+                ESP_LOGW(TAG, "Temperature alarm condition active");
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Temperature alarm condition cleared");
+            }
+
+            alarm_was_active = alarm_is_active;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
@@ -393,6 +440,16 @@ static void SensorTask(void *argument)
         {
             sample.temperature = dht_data.temperature;
             sample.humidity = dht_data.humidity;
+
+            // Publish whether the temperature is outside the normal range.
+            if (evaluateTemperature(sample.temperature) == AlarmState::NORMAL)
+            {
+                xEventGroupClearBits(system_events, EVENT_ALARM);
+            }
+            else
+            {
+                xEventGroupSetBits(system_events, EVENT_ALARM);
+            }
 
         }
         else
@@ -425,12 +482,11 @@ static void SensorTask(void *argument)
             );
         }
 
-        // Copy the latest PIR state into this sensor snapshot.
+        // Copy the current PIR signal state into this sensor snapshot.
         if (sample_is_valid)
         {
-            portENTER_CRITICAL(&display_mode_mux);
-            sample.motionDetected = motion_detected;
-            portEXIT_CRITICAL(&display_mode_mux);
+            EventBits_t event_bits = xEventGroupGetBits(system_events);
+            sample.motionDetected = (event_bits & EVENT_MOTION) != 0;
 
             // This one-item queue keeps the latest sample if its reader is late.
             xQueueOverwrite(sensor_data_queue, &sample);
@@ -525,6 +581,17 @@ extern "C" void app_main(void)
         return;
     }
 
+    // Event bits start clear: initially no motion, active state, or alarm.
+    system_events = xEventGroupCreate();
+
+    if (system_events == nullptr)
+    {
+        ESP_LOGE(TAG, "Could not create system event group");
+        vQueueDelete(sensor_data_queue);
+        sensor_data_queue = nullptr;
+        return;
+    }
+
     BaseType_t consumer_result = xTaskCreate(
         DisplayTask,
         "DisplayTask",
@@ -536,7 +603,7 @@ extern "C" void app_main(void)
 
     if (consumer_result != pdPASS)
     {
-        ESP_LOGE(TAG, "Could not create SensorDataLogTask");
+        ESP_LOGE(TAG, "Could not create DisplayTask");
         vQueueDelete(sensor_data_queue);
         sensor_data_queue = nullptr;
         return;
@@ -574,16 +641,30 @@ extern "C" void app_main(void)
         ESP_LOGE(TAG, "Could not create InputTask");
     }
     BaseType_t motion_result = xTaskCreate(
-    MotionTask,
-    "MotionTask",
-    MOTION_TASK_STACK_SIZE,
-    nullptr,
-    MOTION_TASK_PRIORITY,
-    nullptr
-);
+        MotionTask,
+        "MotionTask",
+        MOTION_TASK_STACK_SIZE,
+        nullptr,
+        MOTION_TASK_PRIORITY,
+        nullptr
+    );
 
     if (motion_result != pdPASS)
-{
-    ESP_LOGE(TAG, "Could not create MotionTask");
-}
+    {
+        ESP_LOGE(TAG, "Could not create MotionTask");
+    }
+
+    BaseType_t alarm_result = xTaskCreate(
+        AlarmTask,
+        "AlarmTask",
+        ALARM_TASK_STACK_SIZE,
+        nullptr,
+        ALARM_TASK_PRIORITY,
+        nullptr
+    );
+
+    if (alarm_result != pdPASS)
+    {
+        ESP_LOGE(TAG, "Could not create AlarmTask");
+    }
 }

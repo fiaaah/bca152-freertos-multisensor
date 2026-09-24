@@ -10,7 +10,7 @@ struct SensorData
     float temperature;       // Degrees Celsius
     float humidity;          // Relative humidity percent
     int lightLevel;          // Normalized ADC level from 0 to 100 percent
-    bool motionDetected;     // Filled in when the PIR sensor is added
+    bool motionDetected;     // True while the PIR output is HIGH
 };
 
 #endif
