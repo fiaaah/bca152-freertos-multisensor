@@ -6,9 +6,16 @@ idf_component_register(
         "main.cpp"
         "dht22.cpp"
         "alarm_logic.cpp"
+        "sensors.cpp"
+        "display.cpp"
+        "input.cpp"
+        "alarm.cpp"
+        "motion.cpp"
+        "system_state.cpp"
+        "rtos_objects.cpp"
     INCLUDE_DIRS
         "../include"
     REQUIRES
-        chill-sam__ssd1306
+        ssd1306
         esp_driver_i2c
 )
