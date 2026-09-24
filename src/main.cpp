@@ -2,6 +2,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 
 #include "driver/gpio.h"
 #include "esp_err.h"
@@ -78,6 +79,32 @@ static const char *TAG = "sensor";
 static adc_oneshot_unit_handle_t adc_handle;
 static QueueHandle_t sensor_data_queue = nullptr;
 static EventGroupHandle_t system_events = nullptr;
+static SemaphoreHandle_t serial_mutex = nullptr;
+
+// Serialize log calls because several FreeRTOS tasks share the serial output.
+#define SERIAL_LOGI(tag, ...)                  \
+    do                                          \
+    {                                           \
+        xSemaphoreTake(serial_mutex, portMAX_DELAY); \
+        ESP_LOGI(tag, __VA_ARGS__);             \
+        xSemaphoreGive(serial_mutex);           \
+    } while (0)
+
+#define SERIAL_LOGW(tag, ...)                  \
+    do                                          \
+    {                                           \
+        xSemaphoreTake(serial_mutex, portMAX_DELAY); \
+        ESP_LOGW(tag, __VA_ARGS__);             \
+        xSemaphoreGive(serial_mutex);           \
+    } while (0)
+
+#define SERIAL_LOGE(tag, ...)                  \
+    do                                          \
+    {                                           \
+        xSemaphoreTake(serial_mutex, portMAX_DELAY); \
+        ESP_LOGE(tag, __VA_ARGS__);             \
+        xSemaphoreGive(serial_mutex);           \
+    } while (0)
 
 static esp_err_t LdrInit()
 {
@@ -162,7 +189,7 @@ static void DisplayTask(void *argument)
 
     if (result != ESP_OK)
     {
-        ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(result));
+        SERIAL_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(result));
         vTaskDelete(nullptr);
         return;
     }
@@ -181,7 +208,7 @@ static void DisplayTask(void *argument)
 
     if (result != ESP_OK)
     {
-        ESP_LOGE(TAG, "OLED initialization failed: %s", esp_err_to_name(result));
+        SERIAL_LOGE(TAG, "OLED initialization failed: %s", esp_err_to_name(result));
         vTaskDelete(nullptr);
         return;
     }
@@ -233,9 +260,9 @@ static void DisplayTask(void *argument)
             }
 
             // Keep the serial readings while we transition from the logger.
-            ESP_LOGI(TAG, "Temperature: %.1f C", sample.temperature);
-            ESP_LOGI(TAG, "Humidity: %.1f %%", sample.humidity);
-            ESP_LOGI(TAG, "LDR ADC level: %d %%", sample.lightLevel);
+            SERIAL_LOGI(TAG, "Temperature: %.1f C", sample.temperature);
+            SERIAL_LOGI(TAG, "Humidity: %.1f %%", sample.humidity);
+            SERIAL_LOGI(TAG, "LDR ADC level: %d %%", sample.lightLevel);
         }
     }
 }
@@ -294,7 +321,7 @@ static void InputTask(void *argument)
     esp_err_t result = gpio_config(&encoder_config);
     if (result != ESP_OK)
     {
-        ESP_LOGE(TAG, "Encoder GPIO setup failed: %s", esp_err_to_name(result));
+        SERIAL_LOGE(TAG, "Encoder GPIO setup failed: %s", esp_err_to_name(result));
         vTaskDelete(nullptr);
         return;
     }
@@ -317,7 +344,7 @@ static void InputTask(void *argument)
             selected_mode = current_display_mode;
             portEXIT_CRITICAL(&display_mode_mux);
 
-            ESP_LOGI(TAG, "Encoder page: %s", DisplayModeName(selected_mode));
+            SERIAL_LOGI(TAG, "Encoder page: %s", DisplayModeName(selected_mode));
         }
 
         previous_clk = current_clk;
@@ -339,7 +366,7 @@ static void MotionTask(void *argument)
     esp_err_t result = gpio_config(&pir_config);
     if (result != ESP_OK)
     {
-        ESP_LOGE(TAG, "PIR GPIO setup failed: %s", esp_err_to_name(result));
+        SERIAL_LOGE(TAG, "PIR GPIO setup failed: %s", esp_err_to_name(result));
         vTaskDelete(nullptr);
         return;
     }
@@ -363,7 +390,7 @@ static void MotionTask(void *argument)
                 motion_state = MotionState::ACTIVE;
                 xEventGroupSetBits(system_events, EVENT_ACTIVE);
 
-                ESP_LOGI(TAG, "Motion detected");
+                SERIAL_LOGI(TAG, "Motion detected");
             }
         }
         else
@@ -378,7 +405,7 @@ static void MotionTask(void *argument)
                 motion_state = MotionState::INACTIVE;
                 xEventGroupClearBits(system_events, EVENT_ACTIVE);
 
-                ESP_LOGI(TAG, "Motion inactive after timeout");
+                SERIAL_LOGI(TAG, "Motion inactive after timeout");
             }
         }
 
@@ -402,11 +429,11 @@ static void AlarmTask(void *argument)
         {
             if (alarm_is_active)
             {
-                ESP_LOGW(TAG, "Temperature alarm condition active");
+                SERIAL_LOGW(TAG, "Temperature alarm condition active");
             }
             else
             {
-                ESP_LOGI(TAG, "Temperature alarm condition cleared");
+                SERIAL_LOGI(TAG, "Temperature alarm condition cleared");
             }
 
             alarm_was_active = alarm_is_active;
@@ -455,7 +482,7 @@ static void SensorTask(void *argument)
         else
         {
             sample_is_valid = false;
-            ESP_LOGE(
+            SERIAL_LOGE(
                 TAG,
                 "DHT22 read failed: %s",
                 esp_err_to_name(dht_result)
@@ -476,7 +503,7 @@ static void SensorTask(void *argument)
         else
         {
             sample_is_valid = false;
-            ESP_LOGE(
+            SERIAL_LOGE(
                 TAG,
                 "LDR read failed"
             );
@@ -506,12 +533,20 @@ static void SensorTask(void *argument)
 
 extern "C" void app_main(void)
 {
-    ESP_LOGI(
+    serial_mutex = xSemaphoreCreateMutex();
+
+    if (serial_mutex == nullptr)
+    {
+        ESP_LOGE(TAG, "Could not create serial output mutex");
+        return;
+    }
+
+    SERIAL_LOGI(
         TAG,
         "BCA152 FreeRTOS Multisensor"
     );
 
-    ESP_LOGI(
+    SERIAL_LOGI(
         TAG,
         "System starting..."
     );
@@ -519,7 +554,7 @@ extern "C" void app_main(void)
     /*
      * Initialize DHT22.
      */
-    ESP_LOGI(
+    SERIAL_LOGI(
         TAG,
         "Initializing DHT22..."
     );
@@ -529,7 +564,7 @@ extern "C" void app_main(void)
 
     if (result != ESP_OK)
     {
-        ESP_LOGE(
+        SERIAL_LOGE(
             TAG,
             "DHT22 initialization failed: %s",
             esp_err_to_name(result)
@@ -538,7 +573,7 @@ extern "C" void app_main(void)
         return;
     }
 
-    ESP_LOGI(
+    SERIAL_LOGI(
         TAG,
         "DHT22 initialized successfully."
     );
@@ -546,7 +581,7 @@ extern "C" void app_main(void)
     /*
      * Initialize LDR.
      */
-    ESP_LOGI(
+    SERIAL_LOGI(
         TAG,
         "Initializing LDR..."
     );
@@ -555,7 +590,7 @@ extern "C" void app_main(void)
 
     if (result != ESP_OK)
     {
-        ESP_LOGE(
+        SERIAL_LOGE(
             TAG,
             "LDR initialization failed: %s",
             esp_err_to_name(result)
@@ -564,7 +599,7 @@ extern "C" void app_main(void)
         return;
     }
 
-    ESP_LOGI(
+    SERIAL_LOGI(
         TAG,
         "LDR initialized successfully."
     );
@@ -577,7 +612,7 @@ extern "C" void app_main(void)
 
     if (sensor_data_queue == nullptr)
     {
-        ESP_LOGE(TAG, "Could not create sensor data queue");
+        SERIAL_LOGE(TAG, "Could not create sensor data queue");
         return;
     }
 
@@ -586,7 +621,7 @@ extern "C" void app_main(void)
 
     if (system_events == nullptr)
     {
-        ESP_LOGE(TAG, "Could not create system event group");
+        SERIAL_LOGE(TAG, "Could not create system event group");
         vQueueDelete(sensor_data_queue);
         sensor_data_queue = nullptr;
         return;
@@ -603,7 +638,7 @@ extern "C" void app_main(void)
 
     if (consumer_result != pdPASS)
     {
-        ESP_LOGE(TAG, "Could not create DisplayTask");
+        SERIAL_LOGE(TAG, "Could not create DisplayTask");
         vQueueDelete(sensor_data_queue);
         sensor_data_queue = nullptr;
         return;
@@ -621,7 +656,7 @@ extern "C" void app_main(void)
 
     if (task_result != pdPASS)
     {
-        ESP_LOGE(
+        SERIAL_LOGE(
             TAG,
             "Could not create SensorTask"
         );
@@ -638,7 +673,7 @@ extern "C" void app_main(void)
 
     if (input_result != pdPASS)
     {
-        ESP_LOGE(TAG, "Could not create InputTask");
+        SERIAL_LOGE(TAG, "Could not create InputTask");
     }
     BaseType_t motion_result = xTaskCreate(
         MotionTask,
@@ -651,7 +686,7 @@ extern "C" void app_main(void)
 
     if (motion_result != pdPASS)
     {
-        ESP_LOGE(TAG, "Could not create MotionTask");
+        SERIAL_LOGE(TAG, "Could not create MotionTask");
     }
 
     BaseType_t alarm_result = xTaskCreate(
@@ -665,6 +700,6 @@ extern "C" void app_main(void)
 
     if (alarm_result != pdPASS)
     {
-        ESP_LOGE(TAG, "Could not create AlarmTask");
+        SERIAL_LOGE(TAG, "Could not create AlarmTask");
     }
 }
