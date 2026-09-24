@@ -42,25 +42,35 @@ void MotionTask(void *argument)
     {
         TickType_t now = xTaskGetTickCount();
         int pir_level = gpio_get_level(PIR_PIN);
+        bool motion_detected = (pir_level == 1);
 
-        if (pir_level == 1)
+        if (motion_detected)
         {
             last_motion_tick = now;
             xEventGroupSetBits(system_events, EVENT_MOTION);
-            if (motion_state == MotionState::INACTIVE)
-            {
-                motion_state = MotionState::ACTIVE;
-                xEventGroupSetBits(system_events, EVENT_ACTIVE);
-                SERIAL_LOGI(TAG, "Motion detected");
-            }
         }
         else
         {
             xEventGroupClearBits(system_events, EVENT_MOTION);
-            if (motion_state == MotionState::ACTIVE &&
-                (now - last_motion_tick) >= pdMS_TO_TICKS(MOTION_INACTIVITY_TIMEOUT_MS))
+        }
+
+        MotionState next_state = evaluateSystemState(
+            motion_state,
+            motion_detected,
+            pdTICKS_TO_MS(now - last_motion_tick),
+            MOTION_INACTIVITY_TIMEOUT_MS
+        );
+
+        if (next_state != motion_state)
+        {
+            motion_state = next_state;
+            if (motion_state == MotionState::ACTIVE)
             {
-                motion_state = MotionState::INACTIVE;
+                xEventGroupSetBits(system_events, EVENT_ACTIVE);
+                SERIAL_LOGI(TAG, "Motion detected");
+            }
+            else
+            {
                 xEventGroupClearBits(system_events, EVENT_ACTIVE);
                 SERIAL_LOGI(TAG, "Motion inactive after timeout");
             }

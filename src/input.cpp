@@ -46,7 +46,9 @@ void InputTask(void *argument)
             bool clockwise = (gpio_get_level(ENCODER_DT_PIN) == 1);
             DisplayMode selected_mode;
             portENTER_CRITICAL(&display_mode_mux);
-            current_display_mode = AdvanceDisplayMode(current_display_mode, clockwise);
+            current_display_mode = clockwise
+                ? nextDisplayMode(current_display_mode)
+                : previousDisplayMode(current_display_mode);
             selected_mode = current_display_mode;
             portEXIT_CRITICAL(&display_mode_mux);
 

@@ -1,29 +1,47 @@
 #include "system_state.h"
 
-DisplayMode AdvanceDisplayMode(DisplayMode mode, bool clockwise)
+DisplayMode nextDisplayMode(DisplayMode mode)
 {
-    if (clockwise)
+    switch (mode)
     {
-        switch (mode)
-        {
-            case DisplayMode::TEMPERATURE: return DisplayMode::HUMIDITY;
-            case DisplayMode::HUMIDITY:    return DisplayMode::LIGHT;
-            case DisplayMode::LIGHT:       return DisplayMode::MOTION;
-            case DisplayMode::MOTION:      return DisplayMode::TEMPERATURE;
-        }
-    }
-    else
-    {
-        switch (mode)
-        {
-            case DisplayMode::TEMPERATURE: return DisplayMode::MOTION;
-            case DisplayMode::HUMIDITY:    return DisplayMode::TEMPERATURE;
-            case DisplayMode::LIGHT:       return DisplayMode::HUMIDITY;
-            case DisplayMode::MOTION:      return DisplayMode::LIGHT;
-        }
+        case DisplayMode::TEMPERATURE: return DisplayMode::HUMIDITY;
+        case DisplayMode::HUMIDITY:    return DisplayMode::LIGHT;
+        case DisplayMode::LIGHT:       return DisplayMode::MOTION;
+        case DisplayMode::MOTION:      return DisplayMode::TEMPERATURE;
     }
 
     return DisplayMode::TEMPERATURE;
+}
+
+DisplayMode previousDisplayMode(DisplayMode mode)
+{
+    switch (mode)
+    {
+        case DisplayMode::TEMPERATURE: return DisplayMode::MOTION;
+        case DisplayMode::HUMIDITY:    return DisplayMode::TEMPERATURE;
+        case DisplayMode::LIGHT:       return DisplayMode::HUMIDITY;
+        case DisplayMode::MOTION:      return DisplayMode::LIGHT;
+    }
+
+    return DisplayMode::TEMPERATURE;
+}
+
+MotionState evaluateSystemState(MotionState current_state,
+                                bool motion_detected,
+                                uint32_t inactivity_ms,
+                                uint32_t timeout_ms)
+{
+    if (motion_detected)
+    {
+        return MotionState::ACTIVE;
+    }
+
+    if (current_state == MotionState::ACTIVE && inactivity_ms >= timeout_ms)
+    {
+        return MotionState::INACTIVE;
+    }
+
+    return current_state;
 }
 
 const char *DisplayModeName(DisplayMode mode)
