@@ -18,6 +18,7 @@ constexpr gpio_num_t DHT22_PIN = GPIO_NUM_4;
 constexpr adc_unit_t LDR_ADC_UNIT = ADC_UNIT_1;
 constexpr adc_channel_t LDR_ADC_CHANNEL = ADC_CHANNEL_6;
 constexpr int ADC_RAW_MAX = 4095;
+constexpr int LDR_RAW_MIN = 32; 
 constexpr int SENSOR_SAMPLE_PERIOD_MS = 2000;
 constexpr char TAG[] = "sensor";
 
@@ -49,8 +50,10 @@ int LdrReadPercent()
         return -1;
     }
 
+     ESP_LOGI(TAG, "LDR raw: %d", raw);
+
     // This is a normalized ADC percentage, not a calibrated lux measurement.
-    int percent = (raw * 100) / ADC_RAW_MAX;
+    int percent = ((ADC_RAW_MAX - raw) * 100) / (ADC_RAW_MAX - LDR_RAW_MIN);
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     return percent;
